@@ -248,10 +248,17 @@ function renderAdmin(cfg) {
   h1 { margin-top: 0; font-size: 1.5rem; }
   p.sub { color: #555; margin-top: -.25rem; }
   label { display: block; font-weight: 600; margin: 1.1rem 0 .35rem; font-size: .92rem; }
-  input[type="text"], input[type="url"], textarea, input[type="color"], input[type="file"] {
+  input[type="text"], input[type="url"], textarea, input[type="file"] {
     width: 100%; padding: .6rem .75rem; border: 1px solid #d0d4da; border-radius: 8px;
     font-size: .95rem; font-family: inherit; background: #fff; color: inherit;
   }
+  input[type="color"] {
+    width: 100%; height: 64px; padding: .25rem; border: 1px solid #d0d4da;
+    border-radius: 8px; background: #fff; cursor: pointer;
+  }
+  input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+  input[type="color"]::-webkit-color-swatch { border: none; border-radius: 6px; }
+  input[type="color"]::-moz-color-swatch { border: none; border-radius: 6px; }
   textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   .toggle { display: flex; align-items: center; gap: .6rem; margin-top: .5rem; }
@@ -300,9 +307,9 @@ function renderAdmin(cfg) {
         </label>
       </div>` : ""}
 
-      <label for="rbiDomain">Remote Browser Isolation Domain</label>
-      <input type="text" id="rbiDomain" name="rbiDomain" placeholder="yourteam (leave empty to use the team domain from the Access JWT)" value="${escapeAttr(cfg.rbiDomain)}" />
-      <div class="hint">Cloudflare Access team domain. If left empty, the worker reads it from the <code>Cf-Access-Jwt-Assertion</code> header (<code>iss</code> claim) of the inbound Access request. The RBI link becomes <code>https://&lt;domain&gt;.cloudflareaccess.com/browser/&lt;url&gt;</code>.</div>
+      <label for="rbiDomain">Team Name</label>
+      <input type="text" id="rbiDomain" name="rbiDomain" placeholder="yourteam (leave empty to use the team name from the Access JWT)" value="${escapeAttr(cfg.rbiDomain)}" />
+      <div class="hint">Cloudflare Access team name. If left empty, the worker reads it from the <code>Cf-Access-Jwt-Assertion</code> header (<code>iss</code> claim) of the inbound Access request. The RBI link becomes <code>https://&lt;team&gt;.cloudflareaccess.com/browser/&lt;url&gt;</code>.</div>
 
       <label>Clientless RBI</label>
       <div class="toggle">
@@ -393,8 +400,8 @@ function renderInterstitial(request, reqUrl, cfg) {
     display: flex; align-items: center; justify-content: center; padding: 2rem 1rem;
   }
   .wrap { max-width: 640px; width: 100%; }
-  .logo { display: flex; justify-content: center; margin-bottom: 1.5rem; }
-  .logo img { max-height: 56px; max-width: 240px; object-fit: contain; }
+  .logo { display: flex; justify-content: center; margin-bottom: 2rem; }
+  .logo img { max-height: 120px; max-width: 360px; object-fit: contain; }
   .card {
     background: var(--card); border: 1px solid var(--border); border-radius: 16px;
     padding: 2rem 2.25rem; backdrop-filter: blur(6px);

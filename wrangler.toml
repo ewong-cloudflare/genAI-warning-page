@@ -2,6 +2,11 @@ name = "genai-warning-page"
 main = "src/index.js"
 compatibility_date = "2026-05-13"
 
+# Disable the public *.workers.dev hostname and per-version preview URLs.
+# Access the Worker only via a configured route / custom domain.
+workers_dev = false
+preview_urls = false
+
 # If you are forking this project: replace this id with your own KV namespace id.
 # Create one via `npx wrangler kv namespace create GENAI_WARNING_PAGE`
 # or pick an existing namespace ID from the Cloudflare dashboard
