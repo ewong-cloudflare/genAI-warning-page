@@ -58,9 +58,7 @@ Marker: `interstitialpagepresented=true`
 Recommended Gateway policy expression (Wirefilter):
 
 ```
-(any(http.request.uri.content_category[*] in {"Artificial Intelligence"})
-  or http.request.host in {"chatgpt.com" "gemini.google.com" "claude.ai"})
-and not(http.request.uri.query contains "interstitialpagepresented=true")
+(not(http.conn.src_ip == 198.41.211.0) and http.request.uri == "https://chatgpt.com/" and not(http.request.uri.path_and_query == "/interstitialpagepresented=true")) or (http.request.uri == "https://gemini.google.com/" and not(http.request.uri.path_and_query == "/interstitialpagepresented=true") and not(any(http.conn.dst_ip[*] == 198.41.211.0)))
 ```
 
 Or, equivalently, in the dashboard rule builder add a final condition:
