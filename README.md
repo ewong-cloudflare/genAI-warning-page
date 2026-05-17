@@ -4,6 +4,11 @@ A single-file Cloudflare Worker that presents a corporate warning page before
 users reach a Generative AI application. Configuration is stored in a Workers KV
 namespace (`GENAI_WARNING_PAGE`) and managed via a built-in admin UI.
 
+> **Default posture:** Out of the box the worker runs in **RBI-only mode** — the
+> Continue button is hidden and users must open AI applications via Cloudflare
+> Clientless RBI. The "user clicks Continue → cookie ack" path is opt-in via
+> the admin UI. This default is deliberate; see § Limitations.
+
 ## Disclaimer
 
 ```
@@ -60,6 +65,42 @@ and not(http.request.uri.query contains "interstitialpagepresented=true")
 
 Or, equivalently, in the dashboard rule builder add a final condition:
 **URL Query — does not contain — `interstitialpagepresented=true`**.
+
+## Limitations
+
+The cookie + bypass-marker design has a known gap rooted in current Cloudflare
+Gateway HTTP policy capabilities:
+
+- **Gateway can only natively redirect on strict URL conditions** (hostname,
+  application list, content category, exact path). It cannot evaluate cookies
+  set on a different origin than the request being inspected — the worker's
+  ack cookie lives on `genai-warning-page.<your zone>`, not on `chatgpt.com`.
+- **The bypass marker must therefore travel in the URL itself** as a query
+  parameter so Gateway can match it on the request to the AI app.
+- **A user can intentionally bypass the interstitial** by appending
+  `?interstitialpagepresented=true` (or any equivalent query) directly to the
+  AI app URL. For example, `https://chatgpt.com/?interstitialpagepresented=true`
+  or even `https://chatgpt.com/?foobar` combined with a Gateway rule that
+  excludes a different marker — once a URL falls outside the policy match,
+  the worker is never invoked and no acknowledgement is recorded.
+
+This is **accepted by design**. The interstitial is a *user-education* surface:
+its job is to remind well-intentioned users of corporate policy before they
+type into a prompt, not to act as a hard control. A determined user can always
+work around a URL-pattern-based redirect.
+
+**If preventing data exfiltration is the actual requirement**, do not rely on
+the Continue path at all. Instead:
+
+1. Leave the worker in its default **RBI-only** mode.
+2. Configure Cloudflare Gateway to route all matching AI traffic to Clientless
+   Remote Browser Isolation.
+3. Apply RBI data-protection controls — disable copy/paste, file uploads,
+   printing, downloads, and keyboard input as appropriate.
+
+That combination removes the bypass surface (the user never has direct browser
+access to the AI app) and the data-protection enforcement happens in the
+isolated browser session, not on the user's trust.
 
 ### Button behaviour
 

@@ -1,27 +1,13 @@
 /**
- * GenAI Interstitial Worker
+ * GenAI Interstitial Worker.
  *
- * Routes:
- *   GET  /admin   -> Admin dashboard (HTML form)
- *   POST /admin   -> Save configuration to KV (JSON or multipart form)
- *   GET  /logo    -> Serves the corporate logo stored in KV (binary)
- *   GET  /        -> Cloudflare Gateway redirect target. Renders the
- *                    interstitial unless a valid per-app ack cookie is
- *                    present, in which case the request is 302'd straight
- *                    to `cf_site_uri`.
- *   GET  /ack     -> Sets the per-app ack cookie (24 h) and 302's to
- *                    `cf_site_uri`. No body; cookie is the side effect.
+ * Single-file Cloudflare Worker that renders a corporate warning page in
+ * front of Generative AI applications. The page is shown via a Cloudflare
+ * Gateway HTTP redirect policy that sends context to this worker.
  *
- * Required query params (set by Gateway's redirect action with
- * "Send context to URL" enabled):
- *   cf_site_uri              destination URL the user originally requested
- *   cf_application_names     one or more matched application names (repeatable)
- *   cf_user_email            user identity (shown in the context block)
- *   cf_source_ip             requesting source IP (shown in the context block)
- *
- * KV binding: GENAI_WARNING_PAGE
- *   key "config" -> JSON settings
- *   key "logo"   -> binary logo bytes (with metadata { contentType })
+ * See README.md for the full design, route/query contract, ack cookie
+ * details, the required Gateway loop-prevention exemption, and known
+ * limitations.
  */
 
 const CONFIG_KEY = "config";
@@ -34,18 +20,9 @@ const ALLOWED_LOGO_TYPES = new Set([
 const ACK_COOKIE_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 const ACK_COOKIE_PREFIX = "genai_ack_";
 
-/**
- * Marker appended to the destination URL when the worker 302's the user
- * through to the AI application. The Cloudflare Gateway HTTP policy MUST be
- * configured to exclude requests whose URL contains this parameter, otherwise
- * Gateway will redirect the post-ack navigation back to the worker and create
- * an infinite redirect loop. Recommended policy expression:
- *
- *   (... AI host match ...) AND not(http.request.uri.query contains "interstitialpagepresented=true")
- *
- * The marker is intentionally NOT used by the worker itself for any logic --
- * the per-app cookie is what suppresses the interstitial UI.
- */
+// Marker appended to the destination URL after ack. The Gateway HTTP policy
+// must exclude requests carrying it to avoid a redirect loop. See README.md
+// § "Required Gateway policy exemption".
 const GATEWAY_BYPASS_PARAM = "interstitialpagepresented";
 const GATEWAY_BYPASS_VALUE = "true";
 
@@ -58,9 +35,9 @@ const DEFAULTS = {
   backgroundColor: "#0b1220",
   accentColor: "#f6821f",
   hasLogo: false,
-  rbiEnabled: false,
-  rbiDomain: "", // Remote Browser Isolation domain (Cloudflare Access team domain)
-  rbiOnly: false, // When true, hide the Continue button and force RBI.
+  rbiEnabled: true,  // Show "Open in Isolated Browser" button by default.
+  rbiDomain: "",     // Cloudflare Access team name (empty = derive from JWT).
+  rbiOnly: true,     // Default to RBI-only: hide Continue, require RBI.
 };
 
 export default {
@@ -275,16 +252,10 @@ function base64UrlDecode(s) {
 
 /* --------------- Gateway redirect context --------------- */
 
-/**
- * Cloudflare Gateway's redirect action appends contextual query parameters
- * to the destination URL when "Send context to URL" is enabled. We surface
- * a useful subset of these on the interstitial.
- *
- * Docs: https://developers.cloudflare.com/cloudflare-one/policies/gateway/http-policies/#send-context-to-redirect
- */
+// Read the cf_* context params Gateway appends when "Send context to URL"
+// is enabled on the redirect action. See README.md § "Required query params".
 function extractGatewayContext(reqUrl) {
   const sp = reqUrl.searchParams;
-  // `cf_application_names` may repeat for multiple matched apps.
   const applicationNames = sp.getAll("cf_application_names").filter(Boolean);
   return {
     userEmail: (sp.get("cf_user_email") || "").trim(),
@@ -296,12 +267,8 @@ function extractGatewayContext(reqUrl) {
 
 /* --------------- Per-app ack cookie --------------- */
 
-/**
- * Derive a stable cookie name for a given application + destination pair.
- * Prefers the first cf_application_names value; falls back to the destination
- * hostname. The result is lowercased and slugified so it is always a valid
- * cookie name and stays per-app (ack ChatGPT != ack Gemini).
- */
+// Per-app cookie name: prefers cf_application_names[0], falls back to host.
+// Slugified to a-z0-9- so the result is always a valid cookie name.
 function ackCookieName(appName, host) {
   const raw = (appName || host || "default").toLowerCase();
   const slug = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
@@ -316,10 +283,6 @@ function buildAckSetCookie(name) {
   return `${name}=1; Path=/; Max-Age=${ACK_COOKIE_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax`;
 }
 
-/**
- * Append the Gateway bypass marker to the destination URL. See
- * GATEWAY_BYPASS_PARAM for why this is required.
- */
 function withGatewayBypass(destinationUrl) {
   try {
     const u = new URL(destinationUrl);
