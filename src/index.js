@@ -7,7 +7,7 @@
  *   GET  /logo        -> Serves the corporate logo stored in KV (binary)
  *   GET  /?url=...    -> Interstitial warning page for the target URL
  *
- * KV binding: INTERSTITIAL_CONFIG
+ * KV binding: GENAI_WARNING_PAGE
  *   key "config" -> JSON settings
  *   key "logo"   -> binary logo bytes (with metadata { contentType })
  */
@@ -64,7 +64,7 @@ export default {
 async function loadConfig(env) {
   let stored = {};
   try {
-    stored = (await env.INTERSTITIAL_CONFIG.get(CONFIG_KEY, { type: "json" })) || {};
+    stored = (await env.GENAI_WARNING_PAGE.get(CONFIG_KEY, { type: "json" })) || {};
   } catch (_) {
     stored = {};
   }
@@ -99,7 +99,7 @@ async function saveConfig(request, env) {
   // Handle logo updates first so `hasLogo` reflects truth.
   let hasLogo = current.hasLogo;
   if (clearLogo) {
-    await env.INTERSTITIAL_CONFIG.delete(LOGO_KEY);
+    await env.GENAI_WARNING_PAGE.delete(LOGO_KEY);
     hasLogo = false;
   } else if (logoFile) {
     const type = (logoFile.type || "").toLowerCase();
@@ -110,7 +110,7 @@ async function saveConfig(request, env) {
       return jsonOrText(ct, { ok: false, error: "Logo exceeds 512 KB" }, 400);
     }
     const bytes = await logoFile.arrayBuffer();
-    await env.INTERSTITIAL_CONFIG.put(LOGO_KEY, bytes, { metadata: { contentType: type } });
+    await env.GENAI_WARNING_PAGE.put(LOGO_KEY, bytes, { metadata: { contentType: type } });
     hasLogo = true;
   }
 
@@ -125,7 +125,7 @@ async function saveConfig(request, env) {
     rbiDomain: sanitizeTeamDomain(incoming.rbiDomain, current.rbiDomain),
   };
 
-  await env.INTERSTITIAL_CONFIG.put(CONFIG_KEY, JSON.stringify(next));
+  await env.GENAI_WARNING_PAGE.put(CONFIG_KEY, JSON.stringify(next));
 
   if (ct.includes("application/json")) {
     return new Response(JSON.stringify({ ok: true, config: next }), {
@@ -148,7 +148,7 @@ function jsonOrText(ct, body, status) {
 /* ---------------- Logo serving ---------------- */
 
 async function serveLogo(env) {
-  const result = await env.INTERSTITIAL_CONFIG.getWithMetadata(LOGO_KEY, { type: "arrayBuffer" });
+  const result = await env.GENAI_WARNING_PAGE.getWithMetadata(LOGO_KEY, { type: "arrayBuffer" });
   if (!result || !result.value) return new Response("Not Found", { status: 404 });
   const contentType = (result.metadata && result.metadata.contentType) || "application/octet-stream";
   return new Response(result.value, {
@@ -272,7 +272,7 @@ function renderAdmin(cfg) {
 <body>
   <div class="card">
     <h1>GenAI Interstitial — Configuration</h1>
-    <p class="sub">Settings and logo are stored in the <code>INTERSTITIAL_CONFIG</code> KV namespace.</p>
+    <p class="sub">Settings and logo are stored in the <code>GENAI_WARNING_PAGE</code> KV namespace.</p>
 
     <form id="cfg" method="POST" action="/admin" enctype="multipart/form-data">
       <label for="warningMessage">Warning Message <span class="hint">(plain text or simple Markdown: **bold**, *italic*, [link](url), line breaks)</span></label>

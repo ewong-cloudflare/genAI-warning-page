@@ -2,7 +2,7 @@
 
 A single-file Cloudflare Worker that presents a corporate warning page before
 users reach a Generative AI application. Configuration is stored in a Workers KV
-namespace (`INTERSTITIAL_CONFIG`) and managed via a built-in admin UI.
+namespace (`GENAI_WARNING_PAGE`) and managed via a built-in admin UI.
 
 ## Disclaimer
 
@@ -35,8 +35,8 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```bash
 # 1. Create the KV namespace
-wrangler kv namespace create INTERSTITIAL_CONFIG
-wrangler kv namespace create INTERSTITIAL_CONFIG --preview
+wrangler kv namespace create GENAI_WARNING_PAGE
+wrangler kv namespace create GENAI_WARNING_PAGE --preview
 
 # 2. Paste the returned ids into wrangler.toml (id / preview_id)
 
