@@ -1,4 +1,4 @@
-name = "genai-interstitial"
+name = "genai-warning-page"
 main = "src/index.js"
 compatibility_date = "2026-05-13"
 
