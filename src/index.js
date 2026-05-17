@@ -20,6 +20,7 @@ const ALLOWED_LOGO_TYPES = new Set([
 ]);
 
 const DEFAULTS = {
+  titleText: "Generative AI Access Notice",
   warningMessage:
     "**Caution:** You are about to access a Generative AI application using your corporate identity. " +
     "Do not paste confidential, customer, or proprietary data into prompts. " +
@@ -115,6 +116,7 @@ async function saveConfig(request, env) {
   }
 
   const next = {
+    titleText: sanitizeShortText(incoming.titleText, current.titleText, 120),
     warningMessage: typeof incoming.warningMessage === "string"
       ? incoming.warningMessage
       : current.warningMessage,
@@ -160,6 +162,13 @@ async function serveLogo(env) {
 }
 
 /* --------------- Sanitizers --------------- */
+
+function sanitizeShortText(value, fallback, maxLen) {
+  if (typeof value !== "string") return fallback;
+  const v = value.replace(/[\r\n\t]+/g, " ").trim();
+  if (v === "") return fallback;
+  return v.slice(0, maxLen);
+}
 
 function sanitizeColor(value, fallback) {
   if (typeof value !== "string") return fallback;
@@ -229,6 +238,40 @@ function base64UrlDecode(s) {
   return atob(s);
 }
 
+/* --------------- Gateway redirect context --------------- */
+
+/**
+ * Cloudflare Gateway's redirect action appends contextual query parameters
+ * to the destination URL when "Send context to URL" is enabled. We surface
+ * a useful subset of these on the interstitial.
+ *
+ * Docs: https://developers.cloudflare.com/cloudflare-one/policies/gateway/http-policies/#send-context-to-redirect
+ */
+function extractGatewayContext(reqUrl) {
+  const sp = reqUrl.searchParams;
+  // `cf_application_names` may repeat for multiple matched apps.
+  const appNames = sp.getAll("cf_application_names").filter(Boolean);
+  return {
+    userEmail: (sp.get("cf_user_email") || "").trim(),
+    sourceIp: (sp.get("cf_source_ip") || "").trim(),
+    applicationName: appNames.length ? appNames.join(", ") : "",
+  };
+}
+
+function renderContextBlock(ctx) {
+  const row = (label, value) => {
+    const hasValue = value && value.length > 0;
+    const cls = hasValue ? "" : ' class="unknown"';
+    const display = hasValue ? escapeHtml(value) : "Unknown";
+    return `<dt>${escapeHtml(label)}</dt><dd${cls}>${display}</dd>`;
+  };
+  return `<div class="context"><dl>${
+    row("User", ctx.userEmail) +
+    row("Source IP", ctx.sourceIp) +
+    row("Application", ctx.applicationName)
+  }</dl></div>`;
+}
+
 /* --------------- Admin UI --------------- */
 
 function renderAdmin(cfg) {
@@ -282,6 +325,9 @@ function renderAdmin(cfg) {
     <p class="sub">Settings and logo are stored in the <code>GENAI_WARNING_PAGE</code> KV namespace.</p>
 
     <form id="cfg" method="POST" action="/admin" enctype="multipart/form-data">
+      <label for="titleText">Title <span class="hint">(shown above the destination hostname)</span></label>
+      <input type="text" id="titleText" name="titleText" maxlength="120" value="${escapeAttr(cfg.titleText)}" />
+
       <label for="warningMessage">Warning Message <span class="hint">(plain text or simple Markdown: **bold**, *italic*, [link](url), line breaks)</span></label>
       <textarea id="warningMessage" name="warningMessage">${escapeHtml(cfg.warningMessage)}</textarea>
 
@@ -320,7 +366,7 @@ function renderAdmin(cfg) {
       <div class="actions">
         <button type="submit">Save Configuration</button>
         <span id="saved" class="pill">Saved</span>
-        <a href="/?url=https%3A%2F%2Fchat.openai.com%2F" target="_blank" style="margin-left:auto;">Preview interstitial &rarr;</a>
+        <a href="/?cf_site_uri=https%3A%2F%2Fchatgpt.com%2F&cf_user_email=preview%40example.com&cf_source_ip=203.0.113.42&cf_application_names=ChatGPT" target="_blank" style="margin-left:auto;">Preview interstitial &rarr;</a>
       </div>
     </form>
   </div>
@@ -350,7 +396,13 @@ function renderAdmin(cfg) {
 /* --------------- Interstitial --------------- */
 
 function renderInterstitial(request, reqUrl, cfg) {
-  const target = (reqUrl.searchParams.get("url") || "").trim();
+  // Cloudflare Gateway sends the destination URL as `cf_site_uri`.
+  // Keep `url` as a backward-compatible alias for manual / preview use.
+  const target = (
+    reqUrl.searchParams.get("cf_site_uri") ||
+    reqUrl.searchParams.get("url") ||
+    ""
+  ).trim();
   const parsed = safeParseTarget(target);
 
   if (!parsed) {
@@ -359,6 +411,9 @@ function renderInterstitial(request, reqUrl, cfg) {
       headers: { "content-type": "text/html; charset=utf-8" },
     });
   }
+
+  // Extract Gateway redirect context (all optional).
+  const gateway = extractGatewayContext(reqUrl);
 
   // RBI domain: configured value wins; otherwise fall back to the team
   // domain from the inbound Access JWT.
@@ -382,7 +437,7 @@ function renderInterstitial(request, reqUrl, cfg) {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta name="robots" content="noindex,nofollow" />
-<title>GenAI Access Notice — ${escapeHtml(parsed.host)}</title>
+<title>${escapeHtml(cfg.titleText || DEFAULTS.titleText)} — ${escapeHtml(parsed.host)}</title>
 <style>
   :root {
     --bg: ${escapeAttr(bg)};
@@ -414,6 +469,13 @@ function renderInterstitial(request, reqUrl, cfg) {
   .msg p { margin: 0 0 .8rem; }
   .msg p:last-child { margin-bottom: 0; }
   .msg a { color: var(--accent); }
+  .context { margin: 1.25rem 0 0; padding: .9rem 1rem; background: var(--card);
+             border: 1px solid var(--border); border-radius: 10px; font-size: .9rem; }
+  .context dl { margin: 0; display: grid; grid-template-columns: max-content 1fr;
+                gap: .35rem .9rem; align-items: baseline; }
+  .context dt { color: var(--sub); font-weight: 600; }
+  .context dd { margin: 0; color: var(--text); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88rem; }
+  .context dd.unknown { color: var(--sub); font-style: italic; font-family: inherit; }
   .actions { display: flex; gap: .75rem; margin-top: 1.75rem; flex-wrap: wrap; }
   .btn {
     flex: 1 1 200px; text-align: center; padding: .85rem 1.1rem; border-radius: 10px;
@@ -434,8 +496,9 @@ function renderInterstitial(request, reqUrl, cfg) {
   <main class="wrap" role="main">
     ${cfg.hasLogo ? `<div class="logo"><img src="/logo" alt="Corporate logo" /></div>` : ""}
     <section class="card">
-      <div class="eyebrow">Generative AI Access Notice</div>
+      <div class="eyebrow">${escapeHtml(cfg.titleText || DEFAULTS.titleText)}</div>
       <h1>You are accessing <span class="host">${escapeHtml(parsed.host)}</span></h1>
+      ${renderContextBlock(gateway)}
       <div class="msg">${renderMarkdown(cfg.warningMessage || DEFAULTS.warningMessage)}</div>
       <div class="actions">
         <a class="btn btn-primary" href="${escapeAttr(continueUrl)}" rel="noopener">Continue to Application</a>
