@@ -2,10 +2,22 @@
  * GenAI Interstitial Worker
  *
  * Routes:
- *   GET  /admin       -> Admin dashboard (HTML form)
- *   POST /admin       -> Save configuration to KV (JSON or multipart form)
- *   GET  /logo        -> Serves the corporate logo stored in KV (binary)
- *   GET  /?url=...    -> Interstitial warning page for the target URL
+ *   GET  /admin   -> Admin dashboard (HTML form)
+ *   POST /admin   -> Save configuration to KV (JSON or multipart form)
+ *   GET  /logo    -> Serves the corporate logo stored in KV (binary)
+ *   GET  /        -> Cloudflare Gateway redirect target. Renders the
+ *                    interstitial unless a valid per-app ack cookie is
+ *                    present, in which case the request is 302'd straight
+ *                    to `cf_site_uri`.
+ *   GET  /ack     -> Sets the per-app ack cookie (24 h) and 302's to
+ *                    `cf_site_uri`. No body; cookie is the side effect.
+ *
+ * Required query params (set by Gateway's redirect action with
+ * "Send context to URL" enabled):
+ *   cf_site_uri              destination URL the user originally requested
+ *   cf_application_names     one or more matched application names (repeatable)
+ *   cf_user_email            user identity (shown in the context block)
+ *   cf_source_ip             requesting source IP (shown in the context block)
  *
  * KV binding: GENAI_WARNING_PAGE
  *   key "config" -> JSON settings
@@ -19,6 +31,9 @@ const ALLOWED_LOGO_TYPES = new Set([
   "image/png", "image/jpeg", "image/svg+xml", "image/webp", "image/gif",
 ]);
 
+const ACK_COOKIE_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+const ACK_COOKIE_PREFIX = "genai_ack_";
+
 const DEFAULTS = {
   titleText: "Generative AI Access Notice",
   warningMessage:
@@ -30,6 +45,7 @@ const DEFAULTS = {
   hasLogo: false,
   rbiEnabled: false,
   rbiDomain: "", // Remote Browser Isolation domain (Cloudflare Access team domain)
+  rbiOnly: false, // When true, hide the Continue button and force RBI.
 };
 
 export default {
@@ -49,6 +65,9 @@ export default {
       }
       if (path === "/" && request.method === "GET") {
         return renderInterstitial(request, url, await loadConfig(env));
+      }
+      if (path === "/ack" && request.method === "GET") {
+        return handleAck(url);
       }
       return new Response("Not Found", { status: 404 });
     } catch (err) {
@@ -125,6 +144,7 @@ async function saveConfig(request, env) {
     hasLogo,
     rbiEnabled: parseBool(incoming.rbiEnabled),
     rbiDomain: sanitizeTeamDomain(incoming.rbiDomain, current.rbiDomain),
+    rbiOnly: parseBool(incoming.rbiOnly),
   };
 
   await env.GENAI_WARNING_PAGE.put(CONFIG_KEY, JSON.stringify(next));
@@ -250,12 +270,59 @@ function base64UrlDecode(s) {
 function extractGatewayContext(reqUrl) {
   const sp = reqUrl.searchParams;
   // `cf_application_names` may repeat for multiple matched apps.
-  const appNames = sp.getAll("cf_application_names").filter(Boolean);
+  const applicationNames = sp.getAll("cf_application_names").filter(Boolean);
   return {
     userEmail: (sp.get("cf_user_email") || "").trim(),
     sourceIp: (sp.get("cf_source_ip") || "").trim(),
-    applicationName: appNames.length ? appNames.join(", ") : "",
+    applicationNames,
+    applicationName: applicationNames.length ? applicationNames.join(", ") : "",
   };
+}
+
+/* --------------- Per-app ack cookie --------------- */
+
+/**
+ * Derive a stable cookie name for a given application + destination pair.
+ * Prefers the first cf_application_names value; falls back to the destination
+ * hostname. The result is lowercased and slugified so it is always a valid
+ * cookie name and stays per-app (ack ChatGPT != ack Gemini).
+ */
+function ackCookieName(appName, host) {
+  const raw = (appName || host || "default").toLowerCase();
+  const slug = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  return ACK_COOKIE_PREFIX + (slug || "default");
+}
+
+function hasValidAck(request, cookieName) {
+  return extractCookie(request, cookieName) === "1";
+}
+
+function buildAckSetCookie(name) {
+  return `${name}=1; Path=/; Max-Age=${ACK_COOKIE_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax`;
+}
+
+/* --------------- /ack handler --------------- */
+
+function handleAck(reqUrl) {
+  const target = (reqUrl.searchParams.get("cf_site_uri") || "").trim();
+  const parsed = safeParseTarget(target);
+  if (!parsed) {
+    return new Response("Invalid or missing cf_site_uri", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+  const appName = (reqUrl.searchParams.get("cf_application_names") || "").trim();
+  const cookieName = ackCookieName(appName, parsed.host);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      "location": parsed.original,
+      "set-cookie": buildAckSetCookie(cookieName),
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+    },
+  });
 }
 
 function renderContextBlock(ctx) {
@@ -363,6 +430,13 @@ function renderAdmin(cfg) {
         <label for="rbiEnabled" style="margin:0;font-weight:500;">Show "Open in Isolated Browser" button</label>
       </div>
 
+      <label>Require Isolated Browser</label>
+      <div class="toggle">
+        <input type="checkbox" id="rbiOnly" name="rbiOnly" value="true" ${cfg.rbiOnly ? "checked" : ""} />
+        <label for="rbiOnly" style="margin:0;font-weight:500;">Disable Continue button and require RBI for all access</label>
+      </div>
+      <div class="hint">When enabled, the interstitial only shows the "Open in Isolated Browser" button. The ack cookie is never set in this mode.</div>
+
       <div class="actions">
         <button type="submit">Save Configuration</button>
         <span id="saved" class="pill">Saved</span>
@@ -378,6 +452,7 @@ function renderAdmin(cfg) {
     var form = e.target;
     var fd = new FormData(form);
     fd.set("rbiEnabled", document.getElementById("rbiEnabled").checked ? "true" : "false");
+    fd.set("rbiOnly", document.getElementById("rbiOnly").checked ? "true" : "false");
     fetch("/admin", { method: "POST", body: fd, headers: { "Accept": "application/json" } })
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function () {
@@ -397,12 +472,7 @@ function renderAdmin(cfg) {
 
 function renderInterstitial(request, reqUrl, cfg) {
   // Cloudflare Gateway sends the destination URL as `cf_site_uri`.
-  // Keep `url` as a backward-compatible alias for manual / preview use.
-  const target = (
-    reqUrl.searchParams.get("cf_site_uri") ||
-    reqUrl.searchParams.get("url") ||
-    ""
-  ).trim();
+  const target = (reqUrl.searchParams.get("cf_site_uri") || "").trim();
   const parsed = safeParseTarget(target);
 
   if (!parsed) {
@@ -415,14 +485,31 @@ function renderInterstitial(request, reqUrl, cfg) {
   // Extract Gateway redirect context (all optional).
   const gateway = extractGatewayContext(reqUrl);
 
+  // If the user has already ack'd this app within the cookie's TTL,
+  // skip the UI entirely and 302 straight to the destination.
+  const cookieName = ackCookieName(gateway.applicationNames[0], parsed.host);
+  if (hasValidAck(request, cookieName)) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        "location": parsed.original,
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+      },
+    });
+  }
+
   // RBI domain: configured value wins; otherwise fall back to the team
   // domain from the inbound Access JWT.
   const effectiveRbiDomain = cfg.rbiDomain || extractTeamDomainFromJwt(request);
 
-  const continueUrl = appendQueryParam(parsed.urlObj, "interstitialpagepresented", "true");
+  // Continue button takes the user through /ack so the cookie is set
+  // server-side immediately before the 302 to the destination.
+  const ackHref = buildAckHref(parsed.original, gateway.applicationNames[0]);
   const rbiUrl = cfg.rbiEnabled && effectiveRbiDomain
     ? `https://${effectiveRbiDomain}.cloudflareaccess.com/browser/${parsed.original}`
     : "";
+  const rbiOnlyMissingDomain = cfg.rbiOnly && !effectiveRbiDomain;
 
   const bg = cfg.backgroundColor || DEFAULTS.backgroundColor;
   const accent = cfg.accentColor || DEFAULTS.accentColor;
@@ -487,6 +574,9 @@ function renderInterstitial(request, reqUrl, cfg) {
   .btn-primary:hover { opacity: .92; }
   .btn-secondary { background: transparent; color: var(--text); border-color: var(--border); }
   .btn-secondary:hover { background: var(--card); }
+  .error-block { flex: 1 1 100%; padding: .9rem 1rem; border-radius: 10px;
+                 background: rgba(220, 38, 38, .12); border: 1px solid rgba(220, 38, 38, .45);
+                 color: var(--text); font-size: .92rem; line-height: 1.4; }
   .footer { margin-top: 1.25rem; text-align: center; color: var(--sub); font-size: .8rem; }
   code { background: var(--card); padding: .1rem .35rem; border-radius: 4px; }
   @media (max-width: 480px) { .card { padding: 1.4rem; } h1 { font-size: 1.25rem; } }
@@ -500,10 +590,7 @@ function renderInterstitial(request, reqUrl, cfg) {
       <h1>You are accessing <span class="host">${escapeHtml(parsed.host)}</span></h1>
       ${renderContextBlock(gateway)}
       <div class="msg">${renderMarkdown(cfg.warningMessage || DEFAULTS.warningMessage)}</div>
-      <div class="actions">
-        <a class="btn btn-primary" href="${escapeAttr(continueUrl)}" rel="noopener">Continue to Application</a>
-        ${rbiUrl ? `<a class="btn btn-secondary" href="${escapeAttr(rbiUrl)}" rel="noopener">Open in Isolated Browser</a>` : ""}
-      </div>
+      ${renderActions(cfg, ackHref, rbiUrl, rbiOnlyMissingDomain)}
     </section>
     <div class="footer">Destination: <code>${escapeHtml(parsed.display)}</code></div>
   </main>
@@ -528,7 +615,29 @@ function missingUrlPage(cfg) {
 background:${escapeAttr(bg)};color:${escapeAttr(text)};font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
 .box{max-width:480px;padding:2rem;text-align:center;}</style></head>
 <body><div class="box"><h1>Missing target URL</h1>
-<p>This page expects a <code>?url=</code> query parameter pointing to the GenAI application.</p></div></body></html>`;
+<p>This page expects a <code>cf_site_uri</code> query parameter, supplied by the Cloudflare Gateway redirect action.</p></div></body></html>`;
+}
+
+/* --------------- Action button rendering --------------- */
+
+function renderActions(cfg, ackHref, rbiUrl, rbiOnlyMissingDomain) {
+  if (cfg.rbiOnly) {
+    if (rbiOnlyMissingDomain) {
+      return `<div class="actions"><div class="error-block">Isolated browser is required by policy, but no Cloudflare Access team domain is configured. Contact your administrator.</div></div>`;
+    }
+    return `<div class="actions"><a class="btn btn-primary" href="${escapeAttr(rbiUrl)}" rel="noopener">Open in Isolated Browser</a></div>`;
+  }
+  return `<div class="actions">
+        <a class="btn btn-primary" href="${escapeAttr(ackHref)}" rel="noopener">Continue to Application</a>
+        ${rbiUrl ? `<a class="btn btn-secondary" href="${escapeAttr(rbiUrl)}" rel="noopener">Open in Isolated Browser</a>` : ""}
+      </div>`;
+}
+
+function buildAckHref(destination, appName) {
+  const u = new URL("/ack", "https://placeholder.invalid");
+  u.searchParams.set("cf_site_uri", destination);
+  if (appName) u.searchParams.set("cf_application_names", appName);
+  return u.pathname + u.search; // relative href, e.g. /ack?cf_site_uri=...
 }
 
 /* --------------- URL helpers --------------- */
@@ -549,12 +658,6 @@ function safeParseTarget(raw) {
   } catch (_) {
     return null;
   }
-}
-
-function appendQueryParam(urlObj, key, value) {
-  const u = new URL(urlObj.toString());
-  u.searchParams.set(key, value);
-  return u.toString();
 }
 
 /* --------------- Color helpers --------------- */

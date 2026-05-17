@@ -19,17 +19,36 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Routes
 
-| Method | Path     | Purpose                                                                 |
-|--------|----------|-------------------------------------------------------------------------|
-| GET    | `/admin` | Admin dashboard (HTML form).                                            |
-| POST   | `/admin` | Save config (`application/json` or `multipart/form-data`).              |
-| GET    | `/logo`  | Serves the corporate logo binary stored in KV.                          |
-| GET    | `/?url=` | Interstitial page for the target GenAI URL.                             |
+| Method | Path     | Purpose                                                                                                  |
+|--------|----------|----------------------------------------------------------------------------------------------------------|
+| GET    | `/admin` | Admin dashboard (HTML form).                                                                              |
+| POST   | `/admin` | Save config (`application/json` or `multipart/form-data`).                                                |
+| GET    | `/logo`  | Serves the corporate logo binary stored in KV.                                                            |
+| GET    | `/`      | Cloudflare Gateway redirect target. Renders the interstitial unless a valid per-app ack cookie is present (then 302's straight to `cf_site_uri`). |
+| GET    | `/ack`   | Sets the per-app ack cookie (24 h) and 302's to `cf_site_uri`. Called by the Continue button.             |
+
+### Required query parameters (from Gateway)
+
+The Gateway HTTP policy must use a **Redirect** action with **"Send context to URL"** enabled. The worker reads:
+
+- `cf_site_uri` — destination URL (required)
+- `cf_application_names` — matched application name(s) (used as the per-app ack key; repeatable)
+- `cf_user_email` — displayed in the context block
+- `cf_source_ip` — displayed in the context block
+
+### Ack cookie
+
+- Set on the Continue path (`/ack`) only. RBI never sets a cookie.
+- Name: `genai_ack_<slug>` where `<slug>` is derived from the first `cf_application_names` value (falling back to the destination hostname).
+- Per-app isolation: acking ChatGPT does **not** ack Gemini.
+- Attributes: `Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax`.
+- While the cookie is valid, the worker responds to `/` with a 302 straight to `cf_site_uri` — no UI is rendered.
 
 ### Button behaviour
 
-- **Continue to Application** → target URL with `interstitialpagepresented=true` appended (preserves existing query string).
-- **Open in Isolated Browser** → `https://<rbiDomain>.cloudflareaccess.com/browser/<original_url>` (shown only when RBI is enabled and an RBI domain is resolvable). If the **Remote Browser Isolation Domain** field is left empty, the worker derives the team domain from the `iss` claim of the inbound Cloudflare Access JWT (`Cf-Access-Jwt-Assertion` header).
+- **Continue to Application** → `/ack?cf_site_uri=...&cf_application_names=...` → worker sets the ack cookie → 302 to the destination.
+- **Open in Isolated Browser** → `https://<rbiDomain>.cloudflareaccess.com/browser/<original_url>` (shown only when **Clientless RBI** is enabled and an RBI team domain is resolvable). If the **Team Name** field is left empty, the worker derives the team domain from the `iss` claim of the inbound Cloudflare Access JWT (`Cf-Access-Jwt-Assertion` header).
+- **Require Isolated Browser** (admin toggle) → hides the Continue button entirely. If no RBI team domain is resolvable, an error block is shown in place of the buttons.
 
 ## Setup
 
@@ -47,8 +66,8 @@ wrangler dev
 wrangler deploy
 ```
 
-Then visit `/admin` to configure the warning message, colors, logo URL,
-Cloudflare Access team domain, and RBI toggle.
+Then visit `/admin` to configure the title, warning message, colors, logo,
+Cloudflare Access team domain, and RBI toggles.
 
 ## Notes
 
