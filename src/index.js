@@ -34,6 +34,21 @@ const ALLOWED_LOGO_TYPES = new Set([
 const ACK_COOKIE_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 const ACK_COOKIE_PREFIX = "genai_ack_";
 
+/**
+ * Marker appended to the destination URL when the worker 302's the user
+ * through to the AI application. The Cloudflare Gateway HTTP policy MUST be
+ * configured to exclude requests whose URL contains this parameter, otherwise
+ * Gateway will redirect the post-ack navigation back to the worker and create
+ * an infinite redirect loop. Recommended policy expression:
+ *
+ *   (... AI host match ...) AND not(http.request.uri.query contains "interstitialpagepresented=true")
+ *
+ * The marker is intentionally NOT used by the worker itself for any logic --
+ * the per-app cookie is what suppresses the interstitial UI.
+ */
+const GATEWAY_BYPASS_PARAM = "interstitialpagepresented";
+const GATEWAY_BYPASS_VALUE = "true";
+
 const DEFAULTS = {
   titleText: "Generative AI Access Notice",
   warningMessage:
@@ -301,6 +316,20 @@ function buildAckSetCookie(name) {
   return `${name}=1; Path=/; Max-Age=${ACK_COOKIE_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax`;
 }
 
+/**
+ * Append the Gateway bypass marker to the destination URL. See
+ * GATEWAY_BYPASS_PARAM for why this is required.
+ */
+function withGatewayBypass(destinationUrl) {
+  try {
+    const u = new URL(destinationUrl);
+    u.searchParams.set(GATEWAY_BYPASS_PARAM, GATEWAY_BYPASS_VALUE);
+    return u.toString();
+  } catch (_) {
+    return destinationUrl;
+  }
+}
+
 /* --------------- /ack handler --------------- */
 
 function handleAck(reqUrl) {
@@ -317,7 +346,7 @@ function handleAck(reqUrl) {
   return new Response(null, {
     status: 302,
     headers: {
-      "location": parsed.original,
+      "location": withGatewayBypass(parsed.original),
       "set-cookie": buildAckSetCookie(cookieName),
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",
@@ -486,13 +515,15 @@ function renderInterstitial(request, reqUrl, cfg) {
   const gateway = extractGatewayContext(reqUrl);
 
   // If the user has already ack'd this app within the cookie's TTL,
-  // skip the UI entirely and 302 straight to the destination.
+  // skip the UI entirely and 302 straight to the destination. The bypass
+  // marker on the destination URL prevents Gateway from re-redirecting
+  // back to the worker and creating an infinite loop.
   const cookieName = ackCookieName(gateway.applicationNames[0], parsed.host);
   if (hasValidAck(request, cookieName)) {
     return new Response(null, {
       status: 302,
       headers: {
-        "location": parsed.original,
+        "location": withGatewayBypass(parsed.original),
         "cache-control": "no-store",
         "referrer-policy": "no-referrer",
       },

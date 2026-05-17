@@ -44,6 +44,23 @@ The Gateway HTTP policy must use a **Redirect** action with **"Send context to U
 - Attributes: `Path=/; Max-Age=86400; Secure; HttpOnly; SameSite=Lax`.
 - While the cookie is valid, the worker responds to `/` with a 302 straight to `cf_site_uri` — no UI is rendered.
 
+### Required Gateway policy exemption (prevents redirect loop)
+
+The worker's cookie lives on the worker's domain, so Gateway (which evaluates requests to the AI app's domain) cannot see it. After ack, the worker 302's to the destination with an additional marker query parameter, and **your Gateway HTTP policy must exclude requests carrying that marker**, otherwise Gateway will redirect the post-ack navigation back to the worker and the browser will hit `ERR_TOO_MANY_REDIRECTS`.
+
+Marker: `interstitialpagepresented=true`
+
+Recommended Gateway policy expression (Wirefilter):
+
+```
+(any(http.request.uri.content_category[*] in {"Artificial Intelligence"})
+  or http.request.host in {"chatgpt.com" "gemini.google.com" "claude.ai"})
+and not(http.request.uri.query contains "interstitialpagepresented=true")
+```
+
+Or, equivalently, in the dashboard rule builder add a final condition:
+**URL Query — does not contain — `interstitialpagepresented=true`**.
+
 ### Button behaviour
 
 - **Continue to Application** → `/ack?cf_site_uri=...&cf_application_names=...` → worker sets the ack cookie → 302 to the destination.
