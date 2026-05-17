@@ -2,9 +2,15 @@ name = "genai-warning-page"
 main = "src/index.js"
 compatibility_date = "2026-05-13"
 
-# Run `wrangler kv namespace create INTERSTITIAL_CONFIG` and paste the id below.
-# Optionally `wrangler kv namespace create INTERSTITIAL_CONFIG --preview` for preview_id.
+# Run `wrangler kv namespace create GENAI-WARNING-PAGE` and paste the id below.
+# Optionally `wrangler kv namespace create GENAI-WARNING-PAGE --preview` for preview_id.
+
+# If you are forking this project: replace this id with your own KV namespace id.
+# Create one via `npx wrangler kv namespace create GENAI-WARNING-PAGE`
+# or pick an existing namespace ID from the Cloudflare dashboard
+# (Workers & Pages → KV → <namespace> → Namespace ID).
+
 [[kv_namespaces]]
-binding = "INTERSTITIAL_CONFIG"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+binding = "GENAI-WARNING-PAGE"
+id = "0d34d861864643eb9cffac2a320ba11d"
+# preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
